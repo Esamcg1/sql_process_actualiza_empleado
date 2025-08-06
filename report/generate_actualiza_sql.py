@@ -8,7 +8,7 @@ from openpyxl.styles import Border, Side, PatternFill, Font, GradientFill, Align
 from openpyxl import Workbook
 from datetime import datetime
 import base64
-from openerp import api, models, fields
+from odoo import api, models, fields
 
 class GenerateStockWizard(models.Model):
     _name = "sql_process_actualiza.sql_actualiza_execute"
@@ -24,19 +24,47 @@ class GenerateStockWizard(models.Model):
     fecha_desde = fields.Date(string="Fecha Desde", default=fields.Date.today, required=True)
     fecha_hasta = fields.Date(string="Fecha Hasta", default=fields.Date.today, required=True)
 
-    @api.multi
     def generate_file(self):
-        """
-        Genera el archivo Excel de nomina.
-        """
-        # Crear el archivo temporal para el Excel
-        fileobj = NamedTemporaryFile('w+b')
-        xlsfile = fileobj.name
-        fileobj.close()
-
-        # Si se debe actualizar datos de empleados
+        # Si debe actualizar datos
         if self.actualiza:
             self._actualizar_datos_empleado()
+
+        # Crear libro de Excel
+        wb = Workbook()
+
+        # Configurar estilos base
+        al1 = Alignment(horizontal="center", vertical="center")
+        font = Font(size=12, bold=True, color="FFFFFF")
+        fill = PatternFill("solid", fgColor="4472C4")
+        thin = Side(border_style="thin", color="000000")
+        border = Border(top=thin, left=thin, right=thin, bottom=thin)
+
+        # Generar hojas
+        self._generar_resumen_empleado(wb)
+        self._generar_detalle_empleado(wb, border, al1, font, fill)
+
+        # Guardar archivo temporal
+        tmp = NamedTemporaryFile(suffix=".xlsx", delete=False)
+        wb.save(tmp.name)
+        tmp.seek(0)
+        excel_data = tmp.read()
+        tmp.close()
+
+        # Guardar en campos del wizard
+        self.write({
+            'data': base64.b64encode(excel_data),
+            'name': 'actualiza_empleado.xlsx',
+            'state': 'get'
+        })
+
+        # Volver a mostrar wizard
+        return {
+            'type': 'ir.actions.act_window',
+            'res_model': self._name,
+            'view_mode': 'form',
+            'res_id': self.id,
+            'target': 'new',
+        }
 
 
     # --------------------------------------------------------
@@ -133,21 +161,21 @@ class GenerateStockWizard(models.Model):
 #--------------------------------------------------------#
 
     def _generar_resumen_empleado(self, wb):
-    """
-    Genera la hoja 'Resumen Empleado' en el Excel con la información resumida por empleado.
-    """
-    ws = wb.active
-    ws.title = "Resumen Empleado"
+        """
+        Genera la hoja 'Resumen Empleado' en el Excel con la información resumida por empleado.
+        """
+        ws = wb.active
+        ws.title = "Resumen Empleado"
 
-    # Configurar hoja y estilos
-    self._configurar_hoja_resumen(ws)
+        # Configurar hoja y estilos
+        self._configurar_hoja_resumen(ws)
 
-    # Ejecutar SQL y obtener datos
-    datos = self._obtener_datos_resumen_empleado()
+        # Ejecutar SQL y obtener datos
+        datos = self._obtener_datos_resumen_empleado()
 
-    # Llenar datos en la hoja
-    self._llenar_datos_resumen(ws, datos)
-    
+        # Llenar datos en la hoja
+        self._llenar_datos_resumen(ws, datos)
+        
 
     def _configurar_hoja_resumen(self, ws):
         """
@@ -189,9 +217,9 @@ class GenerateStockWizard(models.Model):
         company_id = self.env.user.company_id.id
         sql_base = """
             SELECT r.contract_id, he.id AS employee_id, he.name AS nombre_empleado, he.department_id,
-                CONCAT(COALESCE(hda.name,''), (CASE WHEN hda.name isnull THEN '' ELSE '/' END),
-                        COALESCE(hdp.name,''), (CASE WHEN hdp.name isnull THEN '' ELSE '/' END),
-                        COALESCE(hd.name,'')) AS departamento,
+                CONCAT(COALESCE(hda.name->>'es',''), (CASE WHEN hda.name IS NULL THEN '' ELSE '/' END),
+                        COALESCE(hdp.name->>'es',''), (CASE WHEN hdp.name IS NULL THEN '' ELSE '/' END),
+                        COALESCE(hd.name->>'es','')) AS departamento,
                 he.bonificacion_decreto, he.bonificaciones, hc.date_start AS fecha_inicio_contrato,
                 hc.ingresos1, hc.ingresos4, r.dias, hc.wage AS salario_actual,
                 r.bonificacion_acumulada, r.sueldo_acumulado, r.salario_ordinario_anual,
@@ -369,9 +397,9 @@ class GenerateStockWizard(models.Model):
             SELECT r.contract_id, hc.date_start AS fecha_inicio_contrato, hc.wage AS salario_actual,
                 he.id AS employee_id, he.name AS nombre_empleado,
                 he.department_id,
-                CONCAT(COALESCE(hda.name,''), (CASE WHEN hda.name isnull THEN '' ELSE '/' END),
-                        COALESCE(hdp.name,''), (CASE WHEN hdp.name isnull THEN '' ELSE '/' END),
-                        COALESCE(hd.name,'')) AS departamento,
+                CONCAT(COALESCE(hda.name->>'es',''), (CASE WHEN hda.name isnull THEN '' ELSE '/' END),
+                        COALESCE(hdp.name->>'es',''), (CASE WHEN hdp.name isnull THEN '' ELSE '/' END),
+                        COALESCE(hd.name->>'es','')) AS departamento,
                 r.id, hpr.name AS nombre_nomina, hpr.date_start AS fecha_inicio_nomina,
                 hpr.date_end AS fecha_final_nomina,
                 hc.ingresos1, hc.ingresos4, r.dias, hc.wage AS salario_actual,
@@ -409,7 +437,7 @@ class GenerateStockWizard(models.Model):
                 AND hsr.code IN ('raDLA','SO','ORDQ1','ORDQ2','LiqAG','LiqB14')
                 AND hpr.date_start >= %s AND hpr.date_start <= %s
                 AND hpr.date_end >= hc.date_start AND hc.date_end IS NULL
-                GROUP BY hp.contract_id, hpr.id, hsr.name
+                GROUP BY hp.contract_id, hpr.id, hsr.code
             ) d GROUP BY d.contract_id, d.id
             ) r
             JOIN hr_contract hc ON r.contract_id = hc.id
