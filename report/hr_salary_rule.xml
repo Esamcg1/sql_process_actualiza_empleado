@@ -1,0 +1,20 @@
+<odoo>
+
+    <data>
+    
+        <record id="view_hr_salary_rule_form_inherit_sql_process" model="ir.ui.view">
+            <field name="name">hr.salary.rule</field>
+            <field name="model">hr.salary.rule</field>
+            <field name="inherit_id" ref="hr_payroll.hr_salary_rule_form"/>
+            <field name="arch" type="xml">
+                <!-- Insertamos debajo del campo 'suma_regla' -->
+                <field name="partner_id" position="after">
+                    <separator string="Codigo interno." colspan="2"/>
+                    <field name="x_code"/>
+                </field>
+            </field>
+        </record>
+    
+    </data>
+
+</odoo>

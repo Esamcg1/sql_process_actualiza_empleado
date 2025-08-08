@@ -103,7 +103,7 @@ class GenerateStockWizard(models.Model):
             WITH UltimoSalario AS (
                 SELECT 
                     he.id AS employee_id,
-                    hpl.total AS ultimo_salario,
+                    COALESCE(hpl.total, 0) AS ultimo_salario,
                     ROW_NUMBER() OVER (
                         PARTITION BY he.id 
                         ORDER BY hpr.date_start DESC, hpr.id DESC
@@ -113,10 +113,10 @@ class GenerateStockWizard(models.Model):
                 JOIN hr_contract hc ON hc.id = hp.contract_id
                 JOIN res_company rc ON rc.id = hp.company_id
                 JOIN hr_employee he ON hp.employee_id = he.id
-                JOIN hr_payslip_line hpl ON hp.id = hpl.slip_id
-                JOIN hr_salary_rule hsr ON hsr.id = hpl.salary_rule_id
+                LEFT JOIN hr_payslip_line hpl ON hp.id = hpl.slip_id
+                LEFT JOIN hr_salary_rule hsr ON hsr.id = hpl.salary_rule_id
                 WHERE {where_empleado}
-                AND hsr.code IN ('SO', 'SO2')
+                AND hsr.x_code IN ('SO', 'SO2')
                 AND hpr.date_start >= %s 
                 AND hpr.date_start <= %s
                 AND hpr.date_end >= hc.date_start 
@@ -125,20 +125,20 @@ class GenerateStockWizard(models.Model):
             CalculatedData AS (
                 SELECT 
                     he.id AS employee_id,
-                    SUM(CASE WHEN hsr.code = 'raDLA' THEN hpl.total ELSE 0 END) AS dias,
-                    SUM(CASE WHEN hsr.code IN ('ORDQ1', 'ORDQ2') THEN hpl.total ELSE 0 END) AS salario_ordinario_anual,
-                    MAX(hc.otra_bonificacion) AS bonificacion_decreto,
+                    COALESCE(SUM(CASE WHEN hsr.x_code = 'raDLA' THEN hpl.total ELSE 0 END), 0) AS dias,
+                    COALESCE(SUM(CASE WHEN hsr.x_code IN ('ORDQ1', 'ORDQ2') THEN hpl.total ELSE 0 END), 0) AS salario_ordinario_anual,
+                    COALESCE(MAX(hc.otra_bonificacion), 0) AS bonificacion_decreto,
                     COALESCE(us.ultimo_salario, 0) AS ultimo_salario
                 FROM hr_payslip_run hpr
                 JOIN hr_payslip hp ON hp.payslip_run_id = hpr.id
                 JOIN hr_contract hc ON hc.id = hp.contract_id
                 JOIN res_company rc ON rc.id = hp.company_id
                 JOIN hr_employee he ON hp.employee_id = he.id
-                JOIN hr_payslip_line hpl ON hp.id = hpl.slip_id
-                JOIN hr_salary_rule hsr ON hsr.id = hpl.salary_rule_id
+                LEFT JOIN hr_payslip_line hpl ON hp.id = hpl.slip_id
+                LEFT JOIN hr_salary_rule hsr ON hsr.id = hpl.salary_rule_id
                 LEFT JOIN UltimoSalario us ON us.employee_id = he.id AND us.rn = 1
                 WHERE {where_empleado}
-                AND hsr.code IN ('raDLA', 'ORDQ1', 'ORDQ2', 'LiqAG', 'LiqB14', 'SO', 'SO2')
+                AND hsr.x_code IN ('raDLA', 'ORDQ1', 'ORDQ2', 'LiqAG', 'LiqB14', 'SO', 'SO2')
                 AND hpr.date_start >= %s 
                 AND hpr.date_start <= %s
                 AND hpr.date_end >= hc.date_start 
@@ -154,7 +154,6 @@ class GenerateStockWizard(models.Model):
             FROM CalculatedData cd
             WHERE em.id = cd.employee_id;
         """
-
 
 #--------------------------------------------------------#
 # ---------- Resumen por Empleado -----------------------#
@@ -214,49 +213,61 @@ class GenerateStockWizard(models.Model):
         """
         Ejecuta el SQL que genera el resumen por empleado.
         """
+
         company_id = self.env.user.company_id.id
         sql_base = """
             SELECT r.contract_id, he.id AS employee_id, he.name AS nombre_empleado, he.department_id,
-                CONCAT(COALESCE(hda.name->>'es',''), (CASE WHEN hda.name IS NULL THEN '' ELSE '/' END),
-                        COALESCE(hdp.name->>'es',''), (CASE WHEN hdp.name IS NULL THEN '' ELSE '/' END),
-                        COALESCE(hd.name->>'es','')) AS departamento,
-                he.bonificacion_decreto, he.bonificaciones, hc.date_start AS fecha_inicio_contrato,
-                hc.ingresos1, hc.ingresos4, r.dias, hc.wage AS salario_actual,
-                r.bonificacion_acumulada, r.sueldo_acumulado, r.salario_ordinario_anual,
-                hc.ingresos1 + hc.ingresos4 AS bonificacion_adicional
+                CONCAT(
+                    COALESCE(hda.name->>'es',''), 
+                    (CASE WHEN hda.name IS NULL THEN '' ELSE '/' END),
+                    COALESCE(hdp.name->>'es',''), 
+                    (CASE WHEN hdp.name IS NULL THEN '' ELSE '/' END),
+                    COALESCE(hd.name->>'es','')
+                ) AS departamento,
+                COALESCE(he.bonificacion_decreto, 0) AS bonificacion_decreto, 
+                COALESCE(he.bonificaciones, 0) AS bonificaciones, 
+                hc.date_start AS fecha_inicio_contrato,
+                COALESCE(hc.ingresos1, 0) AS ingresos1, 
+                COALESCE(hc.ingresos4, 0) AS ingresos4, 
+                COALESCE(r.dias, 0) AS dias, 
+                COALESCE(hc.wage, 0) AS salario_actual,
+                COALESCE(r.bonificacion_acumulada, 0) AS bonificacion_acumulada, 
+                COALESCE(r.sueldo_acumulado, 0) AS sueldo_acumulado, 
+                COALESCE(r.salario_ordinario_anual, 0) AS salario_ordinario_anual,
+                COALESCE(hc.ingresos1, 0) + COALESCE(hc.ingresos4, 0) AS bonificacion_adicional
             FROM (
                 SELECT d.contract_id,
-                    SUM(d.dias) AS dias,
-                    (SUM(d.ordinario_quincena1)+SUM(d.ordinario_quincena2)) AS salario_ordinario_anual,
-                    SUM(bonificacion) AS bonificacion_acumulada,
-                    SUM(bonificacion) AS sueldo_acumulado
+                    COALESCE(SUM(d.dias), 0) AS dias,
+                    COALESCE(SUM(d.ordinario_quincena1), 0) + COALESCE(SUM(d.ordinario_quincena2), 0) AS salario_ordinario_anual,
+                    COALESCE(SUM(d.bonificacion), 0) AS bonificacion_acumulada,
+                    COALESCE(SUM(d.bonificacion), 0) AS sueldo_acumulado
                 FROM (
                     SELECT hp.contract_id,
-                        CASE WHEN hsr.code = 'raDLA' THEN SUM(hpl.total) ELSE 0.0 END AS dias,
-                        CASE WHEN hsr.code = 'SO' THEN SUM(hpl.total) ELSE 0.0 END AS salario_mensual,
-                        CASE WHEN hsr.code = 'ORDQ1' THEN SUM(hpl.total) ELSE 0.00 END AS ordinario_quincena1,
-                        CASE WHEN hsr.code = 'ORDQ2' THEN SUM(hpl.total) ELSE 0.00 END AS ordinario_quincena2,
-                        CASE WHEN hsr.code = 'LiqAG' THEN SUM(hpl.total) ELSE 0.0 END AS aguinaldo,
-                        CASE WHEN hsr.code = 'SO' THEN SUM(hpl.total) ELSE 0.00 END AS bonificacion, 
-                        CASE WHEN hsr.code = 'LiqB14' THEN SUM(hpl.total) ELSE 0.0 END AS bono_14
+                        SUM(CASE WHEN hsr.x_code = 'raDLA' THEN COALESCE(hpl.total, 0) ELSE 0 END) AS dias,
+                        SUM(CASE WHEN hsr.x_code = 'SO' THEN COALESCE(hpl.total, 0) ELSE 0 END) AS salario_mensual,
+                        SUM(CASE WHEN hsr.x_code = 'ORDQ1' THEN COALESCE(hpl.total, 0) ELSE 0 END) AS ordinario_quincena1,
+                        SUM(CASE WHEN hsr.x_code = 'ORDQ2' THEN COALESCE(hpl.total, 0) ELSE 0 END) AS ordinario_quincena2,
+                        SUM(CASE WHEN hsr.x_code = 'LiqAG' THEN COALESCE(hpl.total, 0) ELSE 0 END) AS aguinaldo,
+                        SUM(CASE WHEN hsr.x_code = 'SO' THEN COALESCE(hpl.total, 0) ELSE 0 END) AS bonificacion, 
+                        SUM(CASE WHEN hsr.x_code = 'LiqB14' THEN COALESCE(hpl.total, 0) ELSE 0 END) AS bono_14
                     FROM hr_payslip_run hpr
                     JOIN hr_payslip hp ON hp.payslip_run_id = hpr.id
                     JOIN hr_contract hc ON hp.contract_id = hc.id
                     JOIN res_company rc ON hp.company_id = rc.id                  
-                    JOIN hr_payslip_line hpl ON hp.id = hpl.slip_id
-                    JOIN hr_salary_rule hsr ON hsr.id = hpl.salary_rule_id
+                    LEFT JOIN hr_payslip_line hpl ON hp.id = hpl.slip_id
+                    LEFT JOIN hr_salary_rule hsr ON hsr.id = hpl.salary_rule_id
                     WHERE rc.id = %s
         """
-
         params = []
         if self.employee_id:
             sql_base += """
-                AND hp.employee_id = %s
-                AND hsr.code IN ('raDLA', 'SO', 'ORDQ1', 'ORDQ2', 'LiqAG', 'LiqB14')
-                AND hpr.date_start >= %s AND hpr.date_start <= %s
-                AND hpr.date_end >= hc.date_start AND hc.date_end isnull
-                GROUP BY hp.contract_id, hsr.code
-            ) d GROUP BY d.contract_id
+                    AND hp.employee_id = %s
+                    AND hsr.x_code IN ('raDLA', 'SO', 'ORDQ1', 'ORDQ2', 'LiqAG', 'LiqB14')
+                    AND hpr.date_start >= %s AND hpr.date_start <= %s
+                    AND hpr.date_end >= hc.date_start AND hc.date_end IS NULL
+                    GROUP BY hp.contract_id, hsr.x_code
+                ) d 
+                GROUP BY d.contract_id
             ) r
             JOIN hr_contract hc ON r.contract_id = hc.id
             LEFT JOIN hr_employee he ON he.id = hc.employee_id
@@ -268,12 +279,13 @@ class GenerateStockWizard(models.Model):
             params = [company_id, self.employee_id.id, self.fecha_desde, self.fecha_hasta]
         else:
             sql_base += """
-                AND hp.employee_id >= 1
-                AND hsr.code IN ('raDLA', 'SO', 'ORDQ1', 'ORDQ2', 'LiqAG', 'LiqB14')
-                AND hpr.date_start >= %s AND hpr.date_start <= %s
-                AND hpr.date_end >= hc.date_start AND hc.date_end isnull
-                GROUP BY hp.contract_id, hsr.code
-            ) d GROUP BY d.contract_id
+                    AND hp.employee_id >= 1
+                    AND hsr.x_code IN ('raDLA', 'SO', 'ORDQ1', 'ORDQ2', 'LiqAG', 'LiqB14')
+                    AND hpr.date_start >= %s AND hpr.date_start <= %s
+                    AND hpr.date_end >= hc.date_start AND hc.date_end IS NULL
+                    GROUP BY hp.contract_id, hsr.x_code
+                ) d 
+                GROUP BY d.contract_id
             ) r
             JOIN hr_contract hc ON r.contract_id = hc.id
             LEFT JOIN hr_employee he ON he.id = hc.employee_id
@@ -393,52 +405,62 @@ class GenerateStockWizard(models.Model):
         """
         company_id = self.env.user.company_id.id
 
+        
+        company_id = self.env.user.company_id.id
+
         sql_base = """
             SELECT r.contract_id, hc.date_start AS fecha_inicio_contrato, hc.wage AS salario_actual,
                 he.id AS employee_id, he.name AS nombre_empleado,
                 he.department_id,
-                CONCAT(COALESCE(hda.name->>'es',''), (CASE WHEN hda.name isnull THEN '' ELSE '/' END),
-                        COALESCE(hdp.name->>'es',''), (CASE WHEN hdp.name isnull THEN '' ELSE '/' END),
-                        COALESCE(hd.name->>'es','')) AS departamento,
+                CONCAT(
+                    COALESCE(hda.name->>'es', ''), 
+                    CASE WHEN hda.name IS NULL THEN '' ELSE '/' END,
+                    COALESCE(hdp.name->>'es', ''), 
+                    CASE WHEN hdp.name IS NULL THEN '' ELSE '/' END,
+                    COALESCE(hd.name->>'es', '')
+                ) AS departamento,
                 r.id, hpr.name AS nombre_nomina, hpr.date_start AS fecha_inicio_nomina,
                 hpr.date_end AS fecha_final_nomina,
-                hc.ingresos1, hc.ingresos4, r.dias, hc.wage AS salario_actual,
-                he.bonificacion_decreto, he.bonificaciones,
-                r.bonificacion_acumulada, r.sueldo_acumulado, r.salario_ordinario_anual,
-                hc.ingresos1 + hc.ingresos4 AS bonificacion_adicional
+                COALESCE(hc.ingresos1, 0) AS ingresos1, COALESCE(hc.ingresos4, 0) AS ingresos4, 
+                COALESCE(r.dias, 0) AS dias, COALESCE(hc.wage, 0) AS salario_actual,
+                COALESCE(he.bonificacion_decreto, 0) AS bonificacion_decreto, COALESCE(he.bonificaciones, 0) AS bonificaciones,
+                COALESCE(r.bonificacion_acumulada, 0) AS bonificacion_acumulada, COALESCE(r.sueldo_acumulado, 0) AS sueldo_acumulado, 
+                COALESCE(r.salario_ordinario_anual, 0) AS salario_ordinario_anual,
+                COALESCE(hc.ingresos1, 0) + COALESCE(hc.ingresos4, 0) AS bonificacion_adicional
             FROM (
                 SELECT d.contract_id, d.id,
-                    SUM(d.dias) AS dias,
-                    (SUM(d.ordinario_quincena1)+SUM(d.ordinario_quincena2)) AS salario_ordinario_anual,
-                    SUM(d.bonificacion) AS bonificacion_acumulada,
-                    SUM(d.bonificacion) AS sueldo_acumulado
+                    SUM(COALESCE(d.dias, 0)) AS dias,
+                    SUM(COALESCE(d.ordinario_quincena1, 0)) + SUM(COALESCE(d.ordinario_quincena2, 0)) AS salario_ordinario_anual,
+                    SUM(COALESCE(d.bonificacion, 0)) AS bonificacion_acumulada,
+                    SUM(COALESCE(d.bonificacion, 0)) AS sueldo_acumulado
                 FROM (
                     SELECT hp.contract_id, hpr.id,
-                        CASE WHEN hsr.code = 'raDLA' THEN SUM(hpl.total) ELSE 0.0 END AS dias,
-                        CASE WHEN hsr.code = 'SO' THEN SUM(hpl.total) ELSE 0.0 END AS salario_mensual,
-                        CASE WHEN hsr.code = 'ORDQ1' THEN SUM(hpl.total) ELSE 0.00 END AS ordinario_quincena1,
-                        CASE WHEN hsr.code = 'ORDQ1' THEN SUM(hpl.total) ELSE 0.00 END AS ordinario_quincena2,
-                        CASE WHEN hsr.code = 'LiqAG' THEN SUM(hpl.total) ELSE 0.0 END AS aguinaldo,
-                        CASE WHEN hsr.code = 'LiqB14' THEN SUM(hpl.total) ELSE 0.0 END AS bono_14,
-                        CASE WHEN hsr.code = 'LiqB14' THEN SUM(hpl.total) ELSE 0.0 END AS bonificacion
+                        SUM(CASE WHEN hsr.x_code = 'raDLA' THEN COALESCE(hpl.total, 0) ELSE 0.0 END) AS dias,
+                        SUM(CASE WHEN hsr.x_code = 'SO' THEN COALESCE(hpl.total, 0) ELSE 0.0 END) AS salario_mensual,
+                        SUM(CASE WHEN hsr.x_code = 'ORDQ1' THEN COALESCE(hpl.total, 0) ELSE 0.0 END) AS ordinario_quincena1,
+                        SUM(CASE WHEN hsr.x_code = 'ORDQ2' THEN COALESCE(hpl.total, 0) ELSE 0.0 END) AS ordinario_quincena2,
+                        SUM(CASE WHEN hsr.x_code = 'LiqAG' THEN COALESCE(hpl.total, 0) ELSE 0.0 END) AS aguinaldo,
+                        SUM(CASE WHEN hsr.x_code = 'LiqB14' THEN COALESCE(hpl.total, 0) ELSE 0.0 END) AS bono_14,
+                        SUM(CASE WHEN hsr.x_code = 'LiqB14' THEN COALESCE(hpl.total, 0) ELSE 0.0 END) AS bonificacion
                     FROM hr_payslip_run hpr
                     JOIN hr_payslip hp ON hpr.id = hp.payslip_run_id
                     JOIN hr_contract hc ON hp.contract_id = hc.id
                     JOIN res_company rc ON hp.company_id = rc.id
-                    JOIN hr_payslip_line hpl ON hp.id = hpl.slip_id
-                    JOIN hr_salary_rule hsr ON hsr.id = hpl.salary_rule_id
+                    LEFT JOIN hr_payslip_line hpl ON hp.id = hpl.slip_id
+                    LEFT JOIN hr_salary_rule hsr ON hsr.id = hpl.salary_rule_id
                     WHERE rc.id = %s
         """
 
         params = []
         if self.employee_id:
             sql_base += """
-                AND hp.employee_id = %s
-                AND hsr.code IN ('raDLA','SO','ORDQ1','ORDQ2','LiqAG','LiqB14')
-                AND hpr.date_start >= %s AND hpr.date_start <= %s
-                AND hpr.date_end >= hc.date_start AND hc.date_end IS NULL
-                GROUP BY hp.contract_id, hpr.id, hsr.code
-            ) d GROUP BY d.contract_id, d.id
+                    AND hp.employee_id = %s
+                    AND hsr.x_code IN ('raDLA','SO','ORDQ1','ORDQ2','LiqAG','LiqB14')
+                    AND hpr.date_start >= %s AND hpr.date_start <= %s
+                    AND hpr.date_end >= hc.date_start AND hc.date_end IS NULL
+                    GROUP BY hp.contract_id, hpr.id, hsr.x_code
+                ) d 
+                GROUP BY d.contract_id, d.id
             ) r
             JOIN hr_contract hc ON r.contract_id = hc.id
             JOIN hr_payslip_run hpr ON r.id = hpr.id
@@ -451,12 +473,13 @@ class GenerateStockWizard(models.Model):
             params = [company_id, self.employee_id.id, self.fecha_desde, self.fecha_hasta]
         else:
             sql_base += """
-                AND hp.employee_id >= 1
-                AND hsr.code IN ('raDLA','SO','ORDQ1','ORDQ2','LiqAG','LiqB14')
-                AND hpr.date_start >= %s AND hpr.date_start <= %s
-                AND hpr.date_end >= hc.date_start AND hc.date_end IS NULL
-                GROUP BY hp.contract_id, hpr.id, hsr.code
-            ) d GROUP BY d.contract_id, d.id
+                    AND hp.employee_id >= 1
+                    AND hsr.x_code IN ('raDLA','SO','ORDQ1','ORDQ2','LiqAG','LiqB14')
+                    AND hpr.date_start >= %s AND hpr.date_start <= %s
+                    AND hpr.date_end >= hc.date_start AND hc.date_end IS NULL
+                    GROUP BY hp.contract_id, hpr.id, hsr.x_code
+                ) d 
+                GROUP BY d.contract_id, d.id
             ) r
             JOIN hr_contract hc ON r.contract_id = hc.id
             JOIN hr_payslip_run hpr ON r.id = hpr.id
